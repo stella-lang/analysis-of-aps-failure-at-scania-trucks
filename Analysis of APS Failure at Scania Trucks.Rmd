@@ -1,0 +1,138 @@
+---
+title: "Programming Assessment"
+author: "Stella Lang"
+output:
+  word_document: default
+---
+
+```{r, message=FALSE, warning=FALSE,echo=FALSE}
+library(randomForest)
+library(caret)
+```
+
+## Data Preprocessing
+
+The original training dataset provided contains 60000 observations with 171 attributes and 16000 observations with 171 attributes in testing dataset. First, I loaded the data into R and converted the label **class** to factor and the rest to numeric. Since the dataset contains lots of missing values, I removed columns with over 10% NAs in the training dataset, which reduces the number of attributes to 143. Then I replaced NAs with median corresponding to each column. Last, I transformed all attributes except **class** to a scale between 0 and 1, while retaining rank order and the relative size of separation between values. After scaling, I found that column 81 (attribute **cd_000**) returns NaNs for the whole column. Since all observations have the same value for attribute **cd_000**, I removed **cd_000** from the training dataset as well, repeating the same process for testing dataset. After data preprocessing, the training and testing datasets have 60000 and 160000 oberservations respectively with 142 attributes.
+
+```{r, echo=FALSE}
+# load data
+train = read.csv("aps_failure_training_set.csv", skip = 20, sep = ",", stringsAsFactors = FALSE)
+test = read.csv("aps_failure_test_set.csv", skip = 20, sep = ",", stringsAsFactors = FALSE)
+
+# convert class to categorical data and the rest to int/double
+train[, -1] = lapply(train[, -1], as.numeric)
+test[, -1] = lapply(test[, -1], as.numeric)
+train[, 1] = as.factor(train[, 1])
+test[, 1] = as.factor(test[, 1])
+
+# remove columns with over 10% NAs
+nas = lapply(train, function(x){sum(is.na(x))/60000 < 0.1})
+reduced_train = train[,unlist(nas)]
+reduced_test = test[, unlist(nas)]
+
+# normalize data to range (0,1) and replace NA with median
+normalize = function(x){(x - min(x)) / (max(x) - min(x))}
+for (i in 2:ncol(reduced_train)){
+  reduced_train[, i][is.na(reduced_train[, i])] = median(reduced_train[, i], na.rm = TRUE)
+  reduced_train[, i] = normalize(reduced_train[, i])
+}
+
+for (i in 2:ncol(reduced_test)){
+  reduced_test[, i][is.na(reduced_test[, i])] = median(reduced_test[, i], na.rm = TRUE)
+  reduced_test[, i] = normalize(reduced_test[, i])
+}
+
+# remove column 81 ("cd_000") 
+reduced_train = reduced_train[, -81]
+reduced_test = reduced_test[, -81]
+```
+
+## Models
+
+In order to predict whether or not truck component failures are related to the Air Pressure System (APS), I applied the following three machine learning approaches on the training dataset: Random Forest (RF), Support Vertor Machine (SVM) and Gradient Boosting Machine (GBM), and assessed each model’s performance based on the corresponding prediction accuracy of testing dataset. `train` function from **caret** package and repeated 10-fold cross-validation are used to choose the best tuning parameters. In addition, since the data is quite unbalanced, I applied undersampling method to adjust the class distribution. Consider that the dataset is fairly large, training models on the whole training dataset would be quite time-consuming. Therefore, I use 10000 training data to test all 16000 testing data.
+
+```{r,echo=FALSE}
+mini_train = reduced_train[1:10000, ]
+ctrl = trainControl(method = "repeatedcv", 
+                     number = 10, 
+                     repeats = 10, 
+                     verboseIter = FALSE,
+                     sampling = "down")
+```
+
+### Random Forest
+
+Random Forest is an ensemble method in which we create a classifier by combining several independent base classifiers. The ensemble classifier then coalesces all predictions to a final prediction based on a majority vote. By averaging several trees, there is a significantly lower risk of overfitting. It overcomes the major drawback of Decision Tree which is highly biased to training dataset. In addition, RF doesn't have strict restrictions on data and is able to deal with unbalanced and missing data. I used default tuning grid for random forest in `train` function.
+
+```{r,echo=FALSE}
+set.seed(42)
+model_rf_under = train(class ~ .,
+                         data = mini_train,
+                         method = "rf",
+                         trControl = ctrl)
+```
+
+
+### Support Vector Machine
+
+SVM is intrinsically suited for two-class problems. It works on the principle of fitting a boundary to a region of points which are all alike. Once a boundary is established, most of the training data is redundant. All it needs is a core set of points which can help identify and set the boundary. SVM is also computationally cheaper compared with logistic regression. For this dataset, I used linear kernel for SVM since the number of features is large. We may not need to map data to a higher dimensional space. In other word, the nonlinear kernel does not improve the performance. Using the linear kernel is good enough, and it only searches for the parameter C, which leads to shorter sloving time.
+
+```{r, warning=FALSE,echo=FALSE}
+set.seed(42)
+model_svm_under = train(class ~ .,
+                         data = mini_train,
+                         method = "svmLinear",
+                         trControl = ctrl)
+```
+
+### Gradient Boosting Machine
+
+Gradient Boosting Machine, unlike Random Forest, builds trees one at a time and uses each new tree to correct errors made by previous trees. It uses weighted averaging, which gives a more reliable prediction if overfitting is not an issue. I used default tuning grid for gradient boosting machine in `train` function.
+
+```{r,echo=FALSE}
+set.seed(42)
+model_gbm_under = train(class ~ .,
+                         data = mini_train,
+                         method = "gbm",
+                         trControl = ctrl)
+```
+
+## Results
+
+The plot below shows the general trends of how each model performs in terms of classification error rates, type I and type II error rates. From the plot, we can see that there is no significant difference in error rate and false positive rate among three models while the false negative rate of SVM differs greatly from RF.
+
+The more detailed results for models implemented are shown below. In terms of classification error, the best result is achieved by SVM, which outperforms RF (improvement of 2.3%) and GBM (improvement of 1%). However, RF performs better than SVM and GBM in terms of total cost. The cost for false negative is much higher than cost for false positive and RF has the lowest false negative rate which is 4%. Therefore, to minimize total cost, RF would be a better choice than SVM and GBM.
+
+```{r,echo=FALSE}
+# make predictions
+pred = predict(model_rf_under, reduced_test[, -1]) ## rf
+pred2 = predict(model_svm_under, reduced_test[, -1]) ## svm
+pred3 = predict(model_gbm_under, reduced_test[, -1]) ## gbm
+
+# accuracies for each model
+acc1 = sum(pred == reduced_test[, 1]) / 16000
+acc2 = sum(pred2 == reduced_test[, 1]) / 16000
+acc3 = sum(pred3 == reduced_test[, 1]) / 16000
+fp1 = table(predicted = pred, actual = reduced_test[, 1])[2,1]
+fp2 = table(predicted = pred2, actual = reduced_test[, 1])[2,1]
+fp3 = table(predicted = pred3, actual = reduced_test[, 1])[2,1]
+fn1 = table(predicted = pred, actual = reduced_test[, 1])[1,2]
+fn2 = table(predicted = pred2, actual = reduced_test[, 1])[1,2]
+fn3 = table(predicted = pred3, actual = reduced_test[, 1])[1,2]
+
+# total cost
+cost1 = 500 * fn1 + 10 * fp1 # rf
+cost2 = 500 * fn2 + 10 * fp2 # svm
+cost3 = 500 * fn3 + 10 * fp3 # gbm
+
+result = data.frame(Method = c("RF", "SVM", "GBM"), "Error Rate" = 1-c(acc1, acc2, acc3), "False Positive" = c(fp1, fp2, fp3), "FP Rate" = c(fp1, fp2, fp3)/sum(reduced_test[,1]=="neg"), "False Negative" = c(fn1, fn2, fn3),"FN Rate" = c(fn1, fn2, fn3)/sum(reduced_test[,1]=="pos"), Cost = c(cost1, cost2, cost3))
+knitr::kable(result, digits = 3, full_width = F)
+
+plot(result$Error.Rate, xaxt = "n", type = "b", col = "dodgerblue", ylim = c(0, 0.12), xlab =
+       "Method", ylab = "Error Rate", main = "Model Performance Comparison", cex = 1, pch = 15)
+axis(1, at = 1:3, labels = result$Method)
+lines(1:3, result$FP.Rate, type = "b", col = "darkorange", pch = 16)
+lines(1:3, result$FN.Rate, type = "b", col = "red", pch = 17)
+legend("topright", legend = c("Error Rate", "False Positve Rate", "False Negative Rate"), col = c("dodgerblue","darkorange","red"), pch = c(15, 16, 17), cex = 0.8, pt.cex = 1)
+```
+
